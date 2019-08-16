@@ -1,0 +1,10 @@
+[package]
+name = "it9910hd_fusefs"
+version = "0.1.0"
+authors = ["Marek G <marek@nomail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libusb = "0.3"

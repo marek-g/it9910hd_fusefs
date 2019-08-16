@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "it9910hd_fusefs",
+            "request": "launch",
+            "type": "gdb",
+            "target": "${workspaceRoot}/target/debug/it9910hd_fusefs",
+            "cwd": "${workspaceRoot}",
+            "env": {
+                "RUST_BACKTRACE": "1"
+            },
+            "preLaunchTask": "build_it9910hd_fusefs"
+        },
+    ]
+}
