@@ -1,3 +1,4 @@
+use libusb::DeviceHandle;
 use std::slice;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -10,207 +11,214 @@ struct Endpoint {
     address: u8,
 }
 
-pub fn run(sender: Sender<Vec<u8>>, terminate_receiver: Receiver<()>) -> Result<(), String> {
-    let vid: u16 = 0x048D;
-    let pid: u16 = 0x9910;
+struct IT9910Driver<'a> {
+    libusb_context: libusb::Context,
 
-    let libusb_context = match libusb::Context::new() {
-        Ok(context) => context,
-        Err(e) => return Err(format!("could not initialize libusb: {}", e)),
-    };
+    has_kernel_driver: bool,
+    handle: Option<DeviceHandle<'a>>,
+    interface_number: u8,
 
-    let devices = match libusb_context.devices() {
-        Ok(d) => d,
-        Err(e) => return Err(format!("could not get list of devices: {}", e)),
-    };
-
-    let (device, _device_desc) = match devices
-        .iter()
-        .map(|d| {
-            let dd = d.device_descriptor();
-            (d, dd)
-        })
-        .find(|(_, dd)| {
-            if let Ok(dd) = dd {
-                dd.vendor_id() == vid && dd.product_id() == pid
-            } else {
-                false
-            }
-        }) {
-        Some((device, Ok(device_desc))) => (device, device_desc),
-        _ => {
-            return Err(format!(
-                "could not open device: VID: {:04x} PID: {:04x}",
-                vid, pid
-            ))
-        }
-    };
-
-    let mut handle = match device.open() {
-        Ok(handle) => handle,
-        Err(e) => return Err(format!("could not open device: {}", e)),
-    };
-
-    // get endpoints
-    let endpoint_command_read: Endpoint;
-    let endpoint_command_write: Endpoint;
-    let endpoint_data_read: Endpoint;
-
-    let config_desc = device.config_descriptor(0).unwrap();
-    let interface = config_desc.interfaces().next().unwrap();
-    let interface_desc = interface.descriptors().next().unwrap();
-    let mut interface_descriptors = interface_desc.endpoint_descriptors();
-    endpoint_command_read = {
-        let endpoint_desc = interface_descriptors.next().unwrap();
-        Endpoint {
-            config: config_desc.number(),
-            iface: interface_desc.interface_number(),
-            setting: interface_desc.setting_number(),
-            address: endpoint_desc.address(),
-        }
-    };
-    endpoint_command_write = {
-        let endpoint_desc = interface_descriptors.next().unwrap();
-        Endpoint {
-            config: config_desc.number(),
-            iface: interface_desc.interface_number(),
-            setting: interface_desc.setting_number(),
-            address: endpoint_desc.address(),
-        }
-    };
-    endpoint_data_read = {
-        let endpoint_desc = interface_descriptors.next().unwrap();
-        Endpoint {
-            config: config_desc.number(),
-            iface: interface_desc.interface_number(),
-            setting: interface_desc.setting_number(),
-            address: endpoint_desc.address(),
-        }
-    };
-
-    let has_kernel_driver = match handle.kernel_driver_active(interface_desc.interface_number()) {
-        Ok(true) => {
-            handle
-                .detach_kernel_driver(interface_desc.interface_number())
-                .ok();
-            true
-        }
-        _ => false,
-    };
-
-    handle
-        .set_active_configuration(config_desc.number())
-        .unwrap();
-    handle
-        .claim_interface(interface_desc.interface_number())
-        .unwrap();
-    handle
-        .set_alternate_setting(
-            interface_desc.interface_number(),
-            interface_desc.setting_number(),
-        )
-        .unwrap();
-
-    stream_video(
-        sender,
-        terminate_receiver,
-        &mut handle,
-        &endpoint_command_read,
-        &endpoint_command_write,
-        &endpoint_data_read,
-    )?;
-
-    if has_kernel_driver {
-        handle
-            .attach_kernel_driver(interface_desc.interface_number())
-            .ok();
-    }
-
-    Ok(())
-}
-
-fn stream_video(
-    sender: Sender<Vec<u8>>,
-    terminate_receiver: Receiver<()>,
-    handle: &mut libusb::DeviceHandle,
-    endpoint_command_read: &Endpoint,
-    endpoint_command_write: &Endpoint,
-    endpoint_data_read: &Endpoint,
-) -> Result<(), String> {
-    let mut transfer_handle = TransferHandle {
-        device_handle: &handle,
-        counter: 0,
-        read_addr: endpoint_command_read.address,
-        write_addr: endpoint_command_write.address,
-        data_addr: endpoint_data_read.address,
-    };
-
-    //transfer_handle.debug_query_time(1)?;
-    //transfer_handle.set_pc_grabber(0)?;
-
-    //std::thread::sleep(std::time::Duration::from_millis(2000));
-
-    //transfer_handle.debug_query_time(1)?;
-    //transfer_handle.get_source()?;
-
-    transfer_handle.set_pc_grabber(1)?;
-    loop {
-        let res = transfer_handle.get_pc_grabber()?;
-        if res > 0 {
-            break;
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-
-    //transfer_handle.debug_query_time(1)?;
-
-    let device_model = transfer_handle.get_hw_grabber()?;
-    if device_model == 2 {
-        transfer_handle.set_source(2, 4)?;
-    }
-
-    for i in 0..35 {
-        transfer_handle.set_pc_grabber2(device_model, i, 1920, 1080, 10000, 30)?;
-    }
-
-    //transfer_handle.debug_query_time(1)?;
-
-    transfer_handle.set_state(2)?;
-
-    loop {
-        // read data always in 16 chunks before issuing other command
-        //let mut data = Vec::with_capacity(256 * 1024);
-        for _i in 0..16 {
-            let mut packet = transfer_handle.read_data()?;
-            sender.send(packet);
-            //data.extend_from_slice(&packet);
-        }
-
-        //sender.send(data);
-
-        match terminate_receiver.try_recv() {
-            Ok(_) => break,
-            Err(_) => (),
-        }
-    }
-
-    transfer_handle.set_state(0)?;
-    transfer_handle.set_pc_grabber(0)?;
-
-    Ok(())
-}
-
-struct TransferHandle<'a> {
-    device_handle: &'a libusb::DeviceHandle<'a>,
     counter: u32,
     read_addr: u8,
     write_addr: u8,
     data_addr: u8,
 }
 
-impl<'a> TransferHandle<'a> {
-    pub fn debug_query_time(&mut self, time: i32) -> Result<i32, String> {
+impl<'a> IT9910Driver<'a> {
+    pub fn new() -> Result<Self, String> {
+        let libusb_context = match libusb::Context::new() {
+            Ok(context) => context,
+            Err(e) => return Err(format!("could not initialize libusb: {}", e)),
+        };
+
+        Ok(IT9910Driver {
+            libusb_context: libusb_context,
+            has_kernel_driver: false,
+            handle: None,
+            interface_number: 0,
+            counter: 0,
+            read_addr: 0,
+            write_addr: 0,
+            data_addr: 0,
+        })
+    }
+
+    pub fn open(
+        &mut self,
+        libusb_context: &'a mut libusb::Context,
+        sender: Sender<Vec<u8>>,
+        terminate_receiver: Receiver<()>,
+    ) -> Result<(), String> {
+        let vid: u16 = 0x048D;
+        let pid: u16 = 0x9910;
+
+        let devices = match libusb_context.devices() {
+            Ok(d) => d,
+            Err(e) => return Err(format!("could not get list of devices: {}", e)),
+        };
+
+        let (device, _device_desc) = match devices
+            .iter()
+            .map(|d| {
+                let dd = d.device_descriptor();
+                (d, dd)
+            })
+            .find(|(_, dd)| {
+                if let Ok(dd) = dd {
+                    dd.vendor_id() == vid && dd.product_id() == pid
+                } else {
+                    false
+                }
+            }) {
+            Some((device, Ok(device_desc))) => (device, device_desc),
+            _ => {
+                return Err(format!(
+                    "could not open device: VID: {:04x} PID: {:04x}",
+                    vid, pid
+                ))
+            }
+        };
+
+        let mut handle = match device.open() {
+            Ok(handle) => handle,
+            Err(e) => return Err(format!("could not open device: {}", e)),
+        };
+
+        // get endpoints
+        let endpoint_command_read: Endpoint;
+        let endpoint_command_write: Endpoint;
+        let endpoint_data_read: Endpoint;
+
+        let config_desc = device.config_descriptor(0).unwrap();
+        let interface = config_desc.interfaces().next().unwrap();
+        let interface_desc = interface.descriptors().next().unwrap();
+        self.interface_number = interface_desc.interface_number();
+
+        let mut interface_descriptors = interface_desc.endpoint_descriptors();
+        endpoint_command_read = {
+            let endpoint_desc = interface_descriptors.next().unwrap();
+            Endpoint {
+                config: config_desc.number(),
+                iface: self.interface_number,
+                setting: interface_desc.setting_number(),
+                address: endpoint_desc.address(),
+            }
+        };
+        endpoint_command_write = {
+            let endpoint_desc = interface_descriptors.next().unwrap();
+            Endpoint {
+                config: config_desc.number(),
+                iface: self.interface_number,
+                setting: interface_desc.setting_number(),
+                address: endpoint_desc.address(),
+            }
+        };
+        endpoint_data_read = {
+            let endpoint_desc = interface_descriptors.next().unwrap();
+            Endpoint {
+                config: config_desc.number(),
+                iface: self.interface_number,
+                setting: interface_desc.setting_number(),
+                address: endpoint_desc.address(),
+            }
+        };
+
+        self.has_kernel_driver = match handle.kernel_driver_active(self.interface_number) {
+            Ok(true) => {
+                handle
+                    .detach_kernel_driver(self.interface_number)
+                    .ok();
+                true
+            }
+            _ => false,
+        };
+
+        handle
+            .set_active_configuration(config_desc.number())
+            .unwrap();
+        handle
+            .claim_interface(self.interface_number)
+            .unwrap();
+        handle
+            .set_alternate_setting(
+                self.interface_number,
+                interface_desc.setting_number(),
+            )
+            .unwrap();
+
+        self.handle = Some(handle);
+
+        self.counter = 0;
+        self.read_addr = endpoint_command_read.address;
+        self.write_addr = endpoint_command_write.address;
+        self.data_addr = endpoint_data_read.address;
+
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<(), String> {
+        //self.debug_query_time(1)?;
+        //self.set_pc_grabber(0)?;
+
+        //std::thread::sleep(std::time::Duration::from_millis(2000));
+
+        //self.debug_query_time(1)?;
+        //self.get_source()?;
+
+        self.set_pc_grabber(1)?;
+        loop {
+            let res = self.get_pc_grabber()?;
+            if res > 0 {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+
+        //self.debug_query_time(1)?;
+
+        let device_model = self.get_hw_grabber()?;
+        if device_model == 2 {
+            self.set_source(2, 4)?;
+        }
+
+        for i in 0..35 {
+            self.set_pc_grabber2(device_model, i, 1920, 1080, 10000, 30)?;
+        }
+
+        //self.debug_query_time(1)?;
+
+        self.set_state(2)?;
+
+        Ok(())
+    }
+
+    pub fn get_data(&mut self) -> Result<Vec<u8>, String>{
+        self.read_data()
+    }
+
+    pub fn stop(&mut self) -> Result<(), String> {
+        self.set_state(0)?;
+        self.set_pc_grabber(0)?;
+
+        Ok(())
+    }
+
+    pub fn close(&mut self) {
+        if self.has_kernel_driver {
+            if let Some(handle) = &self.handle {
+                handle
+                    .attach_kernel_driver(self.interface_number)
+                    .ok();
+            }
+        }
+
+        self.has_kernel_driver = false;
+
+        self.handle = None;
+    }
+
+    fn debug_query_time(&mut self, time: i32) -> Result<i32, String> {
         let mut buf = [0u8; 16 + 4];
 
         write_le_i32(&mut buf[16..20], time);
@@ -224,7 +232,7 @@ impl<'a> TransferHandle<'a> {
         Ok(result_time)
     }
 
-    pub fn get_source(&mut self) -> Result<(i32, i32), String> {
+    fn get_source(&mut self) -> Result<(i32, i32), String> {
         let mut buf = [0u8; 16 + 4 * 2];
 
         let received = self.send_command(&mut buf, 0x99100003, 1)?;
@@ -237,7 +245,7 @@ impl<'a> TransferHandle<'a> {
         Ok((audio_source, video_source))
     }
 
-    pub fn set_source(&mut self, audio_source: i32, video_source: i32) -> Result<(), String> {
+    fn set_source(&mut self, audio_source: i32, video_source: i32) -> Result<(), String> {
         let mut buf = [0u8; 16 + 4 * 2];
 
         write_le_i32(&mut buf[16..20], audio_source);
@@ -249,7 +257,7 @@ impl<'a> TransferHandle<'a> {
         Ok(())
     }
 
-    pub fn set_pc_grabber(&mut self, start: i32) -> Result<(), String> {
+    fn set_pc_grabber(&mut self, start: i32) -> Result<(), String> {
         let mut buf = [0u8; 16 + 4 * 3];
 
         write_le_u32(&mut buf[16..20], 0x38384001);
@@ -262,7 +270,7 @@ impl<'a> TransferHandle<'a> {
         Ok(())
     }
 
-    pub fn set_pc_grabber2(
+    fn set_pc_grabber2(
         &mut self,
         device_model: i32,
         counter: u32,
@@ -289,7 +297,7 @@ impl<'a> TransferHandle<'a> {
         Ok(())
     }
 
-    pub fn get_pc_grabber(&mut self) -> Result<i32, String> {
+    fn get_pc_grabber(&mut self) -> Result<i32, String> {
         let mut buf = [0u8; 16 + 4 * 3];
 
         write_le_u32(&mut buf[16..20], 0x38384001);
@@ -303,7 +311,7 @@ impl<'a> TransferHandle<'a> {
         Ok(result)
     }
 
-    pub fn get_hw_grabber(&mut self) -> Result<(i32), String> {
+    fn get_hw_grabber(&mut self) -> Result<(i32), String> {
         let mut buf = [0u8; 16 + 4 * 35 + 2];
 
         write_le_u32(&mut buf[16..20], 8);
@@ -322,7 +330,7 @@ impl<'a> TransferHandle<'a> {
         Ok(device_model)
     }
 
-    pub fn set_state(&mut self, state: u32) -> Result<(), String> {
+    fn set_state(&mut self, state: u32) -> Result<(), String> {
         let mut buf = [0u8; 16 + 4];
 
         write_le_u32(&mut buf[16..20], state);
@@ -334,7 +342,7 @@ impl<'a> TransferHandle<'a> {
         Ok(())
     }
 
-    pub fn send_command(
+    fn send_command(
         &mut self,
         send: &mut [u8],
         command_id: u32,
@@ -347,68 +355,74 @@ impl<'a> TransferHandle<'a> {
         write_le_u32(&mut send[12..16], 0x99100000 | self.counter);
 
         let timeout = Duration::from_secs(1);
-        match self
-            .device_handle
-            .write_bulk(self.write_addr, &send, timeout)
-        {
-            Ok(_) => {
-                self.counter += 1;
-                //println!(" - sent: {:02x?}", send);
+        if let Some(handle) = &self.handle {
+            match handle.write_bulk(self.write_addr, &send, timeout)
+            {
+                Ok(_) => {
+                    self.counter += 1;
+                    //println!(" - sent: {:02x?}", send);
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "Unable to write request to address: {}, error: {}",
+                        self.write_addr, err
+                    ))
+                }
             }
-            Err(err) => {
-                return Err(format!(
-                    "Unable to write request to address: {}, error: {}",
-                    self.write_addr, err
-                ))
+
+            let mut vec = Vec::<u8>::with_capacity(512);
+            let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
+
+            let timeout = Duration::from_secs(1);
+            match handle.read_bulk(self.read_addr, buf, timeout) {
+                Ok(len) => {
+                    unsafe { vec.set_len(len) };
+                    //println!(" - read: {:02x?}", vec);
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "Unable to read response from address: {}, error: {}",
+                        self.read_addr, err
+                    ))
+                }
             }
+
+            let result_code = read_le_i32(&vec[12..16]);
+            if result_code < 0 {
+                return Err(format!("Negative result code: {}", result_code));
+            }
+
+            Ok(vec)
+        } else {
+            Err(format!("Device is not opened!"))
         }
-
-        let mut vec = Vec::<u8>::with_capacity(512);
-        let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
-
-        let timeout = Duration::from_secs(1);
-        match self.device_handle.read_bulk(self.read_addr, buf, timeout) {
-            Ok(len) => {
-                unsafe { vec.set_len(len) };
-                //println!(" - read: {:02x?}", vec);
-            }
-            Err(err) => {
-                return Err(format!(
-                    "Unable to read response from address: {}, error: {}",
-                    self.read_addr, err
-                ))
-            }
-        }
-
-        let result_code = read_le_i32(&vec[12..16]);
-        if result_code < 0 {
-            return Err(format!("Negative result code: {}", result_code));
-        }
-
-        Ok(vec)
     }
 
-    pub fn read_data(&mut self) -> Result<Vec<u8>, String> {
+    fn read_data(&mut self) -> Result<Vec<u8>, String> {
         let mut vec = Vec::<u8>::with_capacity(16384);
         let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
 
         let timeout = Duration::from_secs(15);
-        match self.device_handle.read_bulk(self.data_addr, buf, timeout) {
-            Ok(len) => {
-                unsafe { vec.set_len(len) };
-                println!(" - read: {} bytes", vec.len());
+        if let Some(handle) = &self.handle {
+            match handle.read_bulk(self.data_addr, buf, timeout) {
+                Ok(len) => {
+                    unsafe { vec.set_len(len) };
+                    println!(" - read: {} bytes", vec.len());
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "Unable to read response from address: {}, error: {}",
+                        self.data_addr, err
+                    ))
+                }
             }
-            Err(err) => {
-                return Err(format!(
-                    "Unable to read response from address: {}, error: {}",
-                    self.data_addr, err
-                ))
-            }
+
+            println!("ReadData()");
+
+            Ok(vec)
+        } else {
+            Err(format!("Device is not opened!"))
         }
-
-        println!("ReadData()");
-
-        Ok(vec)
     }
 }
 
