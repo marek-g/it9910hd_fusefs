@@ -1,5 +1,5 @@
-use std::io::Write;
 use std::slice;
+use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -10,7 +10,7 @@ struct Endpoint {
     address: u8,
 }
 
-pub fn run() -> Result<(), String> {
+pub fn run(sender: Sender<Vec<u8>>, terminate_receiver: Receiver<()>) -> Result<(), String> {
     let vid: u16 = 0x048D;
     let pid: u16 = 0x9910;
 
@@ -112,6 +112,8 @@ pub fn run() -> Result<(), String> {
         .unwrap();
 
     stream_video(
+        sender,
+        terminate_receiver,
         &mut handle,
         &endpoint_command_read,
         &endpoint_command_write,
@@ -128,6 +130,8 @@ pub fn run() -> Result<(), String> {
 }
 
 fn stream_video(
+    sender: Sender<Vec<u8>>,
+    terminate_receiver: Receiver<()>,
     handle: &mut libusb::DeviceHandle,
     endpoint_command_read: &Endpoint,
     endpoint_command_write: &Endpoint,
@@ -167,20 +171,27 @@ fn stream_video(
     }
 
     for i in 0..35 {
-        transfer_handle.set_pc_grabber2(device_model, i, 1920, 1080, 10000, 25)?;
+        transfer_handle.set_pc_grabber2(device_model, i, 1920, 1080, 10000, 30)?;
     }
 
     //transfer_handle.debug_query_time(1)?;
 
     transfer_handle.set_state(2)?;
 
-    let mut file = std::fs::File::create("output.ts").unwrap();
-
-    for _j in 0..10 {
+    loop {
         // read data always in 16 chunks before issuing other command
+        //let mut data = Vec::with_capacity(256 * 1024);
         for _i in 0..16 {
-            let data = transfer_handle.read_data()?;
-            file.write(&data).unwrap();
+            let mut packet = transfer_handle.read_data()?;
+            sender.send(packet);
+            //data.extend_from_slice(&packet);
+        }
+
+        //sender.send(data);
+
+        match terminate_receiver.try_recv() {
+            Ok(_) => break,
+            Err(_) => (),
         }
     }
 
@@ -342,7 +353,7 @@ impl<'a> TransferHandle<'a> {
         {
             Ok(_) => {
                 self.counter += 1;
-                println!(" - sent: {:02x?}", send);
+                //println!(" - sent: {:02x?}", send);
             }
             Err(err) => {
                 return Err(format!(
@@ -359,7 +370,7 @@ impl<'a> TransferHandle<'a> {
         match self.device_handle.read_bulk(self.read_addr, buf, timeout) {
             Ok(len) => {
                 unsafe { vec.set_len(len) };
-                println!(" - read: {:02x?}", vec);
+                //println!(" - read: {:02x?}", vec);
             }
             Err(err) => {
                 return Err(format!(
