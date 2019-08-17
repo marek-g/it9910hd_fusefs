@@ -1,19 +1,8 @@
 use libusb::DeviceHandle;
 use std::slice;
-use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-#[derive(Debug)]
-struct Endpoint {
-    config: u8,
-    iface: u8,
-    setting: u8,
-    address: u8,
-}
-
-struct IT9910Driver<'a> {
-    libusb_context: libusb::Context,
-
+pub struct IT9910Driver<'a> {
     has_kernel_driver: bool,
     handle: Option<DeviceHandle<'a>>,
     interface_number: u8,
@@ -26,13 +15,7 @@ struct IT9910Driver<'a> {
 
 impl<'a> IT9910Driver<'a> {
     pub fn new() -> Result<Self, String> {
-        let libusb_context = match libusb::Context::new() {
-            Ok(context) => context,
-            Err(e) => return Err(format!("could not initialize libusb: {}", e)),
-        };
-
         Ok(IT9910Driver {
-            libusb_context: libusb_context,
             has_kernel_driver: false,
             handle: None,
             interface_number: 0,
@@ -43,115 +26,97 @@ impl<'a> IT9910Driver<'a> {
         })
     }
 
-    pub fn open(
-        &mut self,
-        libusb_context: &'a mut libusb::Context,
-        sender: Sender<Vec<u8>>,
-        terminate_receiver: Receiver<()>,
-    ) -> Result<(), String> {
+    pub fn open(&mut self, libusb_context: &mut libusb::Context) -> Result<(), String> {
         let vid: u16 = 0x048D;
         let pid: u16 = 0x9910;
 
-        let devices = match libusb_context.devices() {
-            Ok(d) => d,
-            Err(e) => return Err(format!("could not get list of devices: {}", e)),
-        };
+        let (
+            mut handle,
+            interface_number,
+            read_addr,
+            write_addr,
+            data_addr,
+            config_desc_number,
+            interface_desc_setting_number,
+        ) = {
+            let devices = match libusb_context.devices() {
+                Ok(d) => d,
+                Err(e) => return Err(format!("could not get list of devices: {}", e)),
+            };
 
-        let (device, _device_desc) = match devices
-            .iter()
-            .map(|d| {
-                let dd = d.device_descriptor();
-                (d, dd)
-            })
-            .find(|(_, dd)| {
-                if let Ok(dd) = dd {
-                    dd.vendor_id() == vid && dd.product_id() == pid
-                } else {
-                    false
+            let (device, _device_desc) = match devices
+                .iter()
+                .map(|d| {
+                    let dd = d.device_descriptor();
+                    (d, dd)
+                })
+                .find(|(_, dd)| {
+                    if let Ok(dd) = dd {
+                        dd.vendor_id() == vid && dd.product_id() == pid
+                    } else {
+                        false
+                    }
+                }) {
+                Some((device, Ok(device_desc))) => (device, device_desc),
+                _ => {
+                    return Err(format!(
+                        "could not open device: VID: {:04x} PID: {:04x}",
+                        vid, pid
+                    ))
                 }
-            }) {
-            Some((device, Ok(device_desc))) => (device, device_desc),
-            _ => {
-                return Err(format!(
-                    "could not open device: VID: {:04x} PID: {:04x}",
-                    vid, pid
-                ))
-            }
+            };
+
+            // get endpoints
+            let config_desc = device.config_descriptor(0).unwrap();
+            let config_desc_number = config_desc.number();
+            let interface = config_desc.interfaces().next().unwrap();
+            let interface_desc = interface.descriptors().next().unwrap();
+            let interface_number = interface_desc.interface_number();
+            let interface_desc_setting_number = interface_desc.setting_number();
+
+            let mut interface_descriptors = interface_desc.endpoint_descriptors();
+            let read_addr = interface_descriptors.next().unwrap().address();
+            let write_addr = interface_descriptors.next().unwrap().address();
+            let data_addr = interface_descriptors.next().unwrap().address();
+
+            let handle = match device.open() {
+                Ok(handle) => handle,
+                Err(e) => return Err(format!("could not open device: {}", e)),
+            };
+
+            (
+                handle,
+                interface_number,
+                read_addr,
+                write_addr,
+                data_addr,
+                config_desc_number,
+                interface_desc_setting_number,
+            )
         };
 
-        let mut handle = match device.open() {
-            Ok(handle) => handle,
-            Err(e) => return Err(format!("could not open device: {}", e)),
-        };
-
-        // get endpoints
-        let endpoint_command_read: Endpoint;
-        let endpoint_command_write: Endpoint;
-        let endpoint_data_read: Endpoint;
-
-        let config_desc = device.config_descriptor(0).unwrap();
-        let interface = config_desc.interfaces().next().unwrap();
-        let interface_desc = interface.descriptors().next().unwrap();
-        self.interface_number = interface_desc.interface_number();
-
-        let mut interface_descriptors = interface_desc.endpoint_descriptors();
-        endpoint_command_read = {
-            let endpoint_desc = interface_descriptors.next().unwrap();
-            Endpoint {
-                config: config_desc.number(),
-                iface: self.interface_number,
-                setting: interface_desc.setting_number(),
-                address: endpoint_desc.address(),
-            }
-        };
-        endpoint_command_write = {
-            let endpoint_desc = interface_descriptors.next().unwrap();
-            Endpoint {
-                config: config_desc.number(),
-                iface: self.interface_number,
-                setting: interface_desc.setting_number(),
-                address: endpoint_desc.address(),
-            }
-        };
-        endpoint_data_read = {
-            let endpoint_desc = interface_descriptors.next().unwrap();
-            Endpoint {
-                config: config_desc.number(),
-                iface: self.interface_number,
-                setting: interface_desc.setting_number(),
-                address: endpoint_desc.address(),
-            }
-        };
+        self.interface_number = interface_number;
+        self.read_addr = read_addr;
+        self.write_addr = write_addr;
+        self.data_addr = data_addr;
 
         self.has_kernel_driver = match handle.kernel_driver_active(self.interface_number) {
             Ok(true) => {
-                handle
-                    .detach_kernel_driver(self.interface_number)
-                    .ok();
+                handle.detach_kernel_driver(self.interface_number).ok();
                 true
             }
             _ => false,
         };
 
+        handle.set_active_configuration(config_desc_number).unwrap();
+        handle.claim_interface(self.interface_number).unwrap();
         handle
-            .set_active_configuration(config_desc.number())
-            .unwrap();
-        handle
-            .claim_interface(self.interface_number)
-            .unwrap();
-        handle
-            .set_alternate_setting(
-                self.interface_number,
-                interface_desc.setting_number(),
-            )
+            .set_alternate_setting(self.interface_number, interface_desc_setting_number)
             .unwrap();
 
         self.handle = Some(handle);
 
         self.counter = 0;
-        self.read_addr = endpoint_command_read.address;
-        self.write_addr = endpoint_command_write.address;
-        self.data_addr = endpoint_data_read.address;
 
         Ok(())
     }
@@ -193,8 +158,15 @@ impl<'a> IT9910Driver<'a> {
         Ok(())
     }
 
-    pub fn get_data(&mut self) -> Result<Vec<u8>, String>{
-        self.read_data()
+    pub fn read_data(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        println!("ReadData()");
+
+        let mut len = 0usize;
+        for _ in 0..16 {
+            len += self.read_data_one_chunk(&mut buf[len..])?;
+        }
+
+        Ok(len)
     }
 
     pub fn stop(&mut self) -> Result<(), String> {
@@ -206,10 +178,8 @@ impl<'a> IT9910Driver<'a> {
 
     pub fn close(&mut self) {
         if self.has_kernel_driver {
-            if let Some(handle) = &self.handle {
-                handle
-                    .attach_kernel_driver(self.interface_number)
-                    .ok();
+            if let Some(handle) = &mut self.handle {
+                handle.attach_kernel_driver(self.interface_number).ok();
             }
         }
 
@@ -356,8 +326,7 @@ impl<'a> IT9910Driver<'a> {
 
         let timeout = Duration::from_secs(1);
         if let Some(handle) = &self.handle {
-            match handle.write_bulk(self.write_addr, &send, timeout)
-            {
+            match handle.write_bulk(self.write_addr, &send, timeout) {
                 Ok(_) => {
                     self.counter += 1;
                     //println!(" - sent: {:02x?}", send);
@@ -371,7 +340,8 @@ impl<'a> IT9910Driver<'a> {
             }
 
             let mut vec = Vec::<u8>::with_capacity(512);
-            let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
+            let buf =
+                unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
 
             let timeout = Duration::from_secs(1);
             match handle.read_bulk(self.read_addr, buf, timeout) {
@@ -398,7 +368,24 @@ impl<'a> IT9910Driver<'a> {
         }
     }
 
-    fn read_data(&mut self) -> Result<Vec<u8>, String> {
+    fn read_data_one_chunk(&mut self, buf: &mut [u8]) -> Result<usize, String> {
+        let timeout = Duration::from_secs(10);
+        if let Some(handle) = &self.handle {
+            match handle.read_bulk(self.data_addr, buf, timeout) {
+                Ok(len) => Ok(len),
+                Err(err) => {
+                    return Err(format!(
+                        "Unable to read response from address: {}, error: {}",
+                        self.data_addr, err
+                    ))
+                }
+            }
+        } else {
+            Err(format!("Device is not opened!"))
+        }
+    }
+
+    /*fn read_data(&mut self) -> Result<Vec<u8>, String> {
         let mut vec = Vec::<u8>::with_capacity(16384);
         let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
 
@@ -407,7 +394,7 @@ impl<'a> IT9910Driver<'a> {
             match handle.read_bulk(self.data_addr, buf, timeout) {
                 Ok(len) => {
                     unsafe { vec.set_len(len) };
-                    println!(" - read: {} bytes", vec.len());
+                    //println!(" - read: {} bytes", vec.len());
                 }
                 Err(err) => {
                     return Err(format!(
@@ -423,7 +410,7 @@ impl<'a> IT9910Driver<'a> {
         } else {
             Err(format!("Device is not opened!"))
         }
-    }
+    }*/
 }
 
 fn read_le_i32(input: &[u8]) -> i32 {
