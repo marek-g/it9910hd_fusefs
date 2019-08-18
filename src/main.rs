@@ -13,6 +13,8 @@ use std::time::{Duration, UNIX_EPOCH};
 mod it9910hd_driver;
 use it9910hd_driver::*;
 
+mod usb_wrapper;
+
 const TTL: Duration = Duration::from_secs(1); // 1 second
 
 const DIR_ATTR: FileAttr = FileAttr {
@@ -53,9 +55,8 @@ struct OpenedFileData {
     pub current_position: usize,
 }
 
-struct IT9910FS<'a> {
-    libusb_context: libusb::Context,
-    it_driver: IT9910Driver<'a>,
+struct IT9910FS {
+    it_driver: Option<IT9910Driver>,
 
     next_fh: u64,
     file_data: HashMap<u64, OpenedFileData>,
@@ -64,11 +65,10 @@ struct IT9910FS<'a> {
     //buffer_start_offset: usize,
 }
 
-impl<'a> IT9910FS<'a> {
-    pub fn new(libusb_context: libusb::Context) -> Result<Self, String> {
+impl IT9910FS {
+    pub fn new() -> Result<Self, String> {
         Ok(IT9910FS {
-            libusb_context: libusb_context,
-            it_driver: IT9910Driver::new()?,
+            it_driver: None,
             next_fh: 0,
             file_data: HashMap::new(),
             buffer: Vec::new(),
@@ -77,7 +77,7 @@ impl<'a> IT9910FS<'a> {
     }
 }
 
-impl<'a> Filesystem for IT9910FS<'a> {
+impl Filesystem for IT9910FS {
     fn lookup(&mut self, _req: &Request, parent: u64, name: &OsStr, reply: ReplyEntry) {
         if parent == 1 && name.to_str() == Some("hdmi_stream.ts") {
             reply.entry(&TTL, &HDMI_STREAM_TS_ATTR, 0);
@@ -136,19 +136,22 @@ impl<'a> Filesystem for IT9910FS<'a> {
                     }
                 };*/
 
-                if let Err(err) = self.it_driver.open(&mut self.libusb_context) {
-                //if let Err(err) = self.it_driver.open(&mut libusb_context) {
-                    eprintln!("Unable to find or open IT9910 device: {}", err);
+                let mut it_driver = match IT9910Driver::open() {
+                    Ok(it_driver) => it_driver,
+                    Err(err) => {
+                        eprintln!("Unable to find or open IT9910 device: {}", err);
+                        reply.error(EIO);
+                        return;
+                    }
+                };
+
+                if let Err(err) = it_driver.start() {
+                    eprintln!("Unable to start IT9910 device: {}", err);
                     reply.error(EIO);
                     return;
                 }
 
-                if let Err(err) = self.it_driver.start() {
-                    eprintln!("Unable to start IT9910 device: {}", err);
-                    self.it_driver.close();
-                    reply.error(EIO);
-                    return;
-                }
+                self.it_driver = Some(it_driver);
             }
 
             self.file_data.insert(
@@ -189,16 +192,18 @@ impl<'a> Filesystem for IT9910FS<'a> {
                     return;
                 }
 
-                while needed_size > self.buffer.len() {
-                    let mut vec = vec![0u8; 16 * 16384];
-                    match self.it_driver.read_data(&mut vec[..]) {
-                        Ok(n) => {
-                            self.buffer.extend_from_slice(&vec[0..n]);
-                        }
-                        Err(err) => {
-                            eprintln!("Error reading data from IT9910 device: {}", err);
-                            reply.error(EIO);
-                            return;
+                if let Some(ref mut it_driver) = &mut self.it_driver {
+                    while needed_size > self.buffer.len() {
+                        let mut vec = vec![0u8; 16 * 16384];
+                        match it_driver.read_data(&mut vec[..]) {
+                            Ok(n) => {
+                                self.buffer.extend_from_slice(&vec[0..n]);
+                            }
+                            Err(err) => {
+                                eprintln!("Error reading data from IT9910 device: {}", err);
+                                reply.error(EIO);
+                                return;
+                            }
                         }
                     }
                 }
@@ -257,11 +262,13 @@ impl<'a> Filesystem for IT9910FS<'a> {
         if self.file_data.len() == 0 {
             println!("Close device");
 
-            if let Err(err) = self.it_driver.stop() {
-                eprintln!("Problem when stopping IT9910 device: {}", err);
+            if let Some(ref mut it_driver) = &mut self.it_driver {
+                if let Err(err) = it_driver.stop() {
+                    eprintln!("Problem when stopping IT9910 device: {}", err);
+                }
             }
 
-            self.it_driver.close();
+            self.it_driver = None;
         }
 
         reply.ok();
@@ -276,12 +283,7 @@ fn main() -> Result<(), String> {
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
 
-    let libusb_context = match libusb::Context::new() {
-        Ok(context) => context,
-        Err(e) => return Err(format!("could not initialize libusb: {}", e)),
-    };
-
-    let it9910fs = IT9910FS::new(libusb_context)?;
+    let it9910fs = IT9910FS::new()?;
 
     fuse::mount(it9910fs, mountpoint, &options).unwrap();
 

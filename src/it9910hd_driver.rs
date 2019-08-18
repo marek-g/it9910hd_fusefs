@@ -1,124 +1,18 @@
-use libusb::DeviceHandle;
 use std::slice;
 use std::time::Duration;
+use crate::usb_wrapper::UsbWrapper;
 
-pub struct IT9910Driver<'a> {
-    has_kernel_driver: bool,
-    handle: Option<DeviceHandle<'a>>,
-    interface_number: u8,
-
+pub struct IT9910Driver {
+    usb_device: UsbWrapper,
     counter: u32,
-    read_addr: u8,
-    write_addr: u8,
-    data_addr: u8,
 }
 
-impl<'a> IT9910Driver<'a> {
-    pub fn new() -> Result<Self, String> {
+impl IT9910Driver {
+    pub fn open() -> Result<Self, String> {
         Ok(IT9910Driver {
-            has_kernel_driver: false,
-            handle: None,
-            interface_number: 0,
+            usb_device: UsbWrapper::new()?,
             counter: 0,
-            read_addr: 0,
-            write_addr: 0,
-            data_addr: 0,
         })
-    }
-
-    pub fn open(&mut self, libusb_context: &mut libusb::Context) -> Result<(), String> {
-        let vid: u16 = 0x048D;
-        let pid: u16 = 0x9910;
-
-        let (
-            mut handle,
-            interface_number,
-            read_addr,
-            write_addr,
-            data_addr,
-            config_desc_number,
-            interface_desc_setting_number,
-        ) = {
-            let devices = match libusb_context.devices() {
-                Ok(d) => d,
-                Err(e) => return Err(format!("could not get list of devices: {}", e)),
-            };
-
-            let (device, _device_desc) = match devices
-                .iter()
-                .map(|d| {
-                    let dd = d.device_descriptor();
-                    (d, dd)
-                })
-                .find(|(_, dd)| {
-                    if let Ok(dd) = dd {
-                        dd.vendor_id() == vid && dd.product_id() == pid
-                    } else {
-                        false
-                    }
-                }) {
-                Some((device, Ok(device_desc))) => (device, device_desc),
-                _ => {
-                    return Err(format!(
-                        "could not open device: VID: {:04x} PID: {:04x}",
-                        vid, pid
-                    ))
-                }
-            };
-
-            // get endpoints
-            let config_desc = device.config_descriptor(0).unwrap();
-            let config_desc_number = config_desc.number();
-            let interface = config_desc.interfaces().next().unwrap();
-            let interface_desc = interface.descriptors().next().unwrap();
-            let interface_number = interface_desc.interface_number();
-            let interface_desc_setting_number = interface_desc.setting_number();
-
-            let mut interface_descriptors = interface_desc.endpoint_descriptors();
-            let read_addr = interface_descriptors.next().unwrap().address();
-            let write_addr = interface_descriptors.next().unwrap().address();
-            let data_addr = interface_descriptors.next().unwrap().address();
-
-            let handle = match device.open() {
-                Ok(handle) => handle,
-                Err(e) => return Err(format!("could not open device: {}", e)),
-            };
-
-            (
-                handle,
-                interface_number,
-                read_addr,
-                write_addr,
-                data_addr,
-                config_desc_number,
-                interface_desc_setting_number,
-            )
-        };
-
-        self.interface_number = interface_number;
-        self.read_addr = read_addr;
-        self.write_addr = write_addr;
-        self.data_addr = data_addr;
-
-        self.has_kernel_driver = match handle.kernel_driver_active(self.interface_number) {
-            Ok(true) => {
-                handle.detach_kernel_driver(self.interface_number).ok();
-                true
-            }
-            _ => false,
-        };
-
-        handle.set_active_configuration(config_desc_number).unwrap();
-        handle.claim_interface(self.interface_number).unwrap();
-        handle
-            .set_alternate_setting(self.interface_number, interface_desc_setting_number)
-            .unwrap();
-
-        self.handle = Some(handle);
-
-        self.counter = 0;
-
-        Ok(())
     }
 
     pub fn start(&mut self) -> Result<(), String> {
@@ -174,18 +68,6 @@ impl<'a> IT9910Driver<'a> {
         self.set_pc_grabber(0)?;
 
         Ok(())
-    }
-
-    pub fn close(&mut self) {
-        if self.has_kernel_driver {
-            if let Some(handle) = &mut self.handle {
-                handle.attach_kernel_driver(self.interface_number).ok();
-            }
-        }
-
-        self.has_kernel_driver = false;
-
-        self.handle = None;
     }
 
     fn debug_query_time(&mut self, time: i32) -> Result<i32, String> {
@@ -325,63 +207,55 @@ impl<'a> IT9910Driver<'a> {
         write_le_u32(&mut send[12..16], 0x99100000 | self.counter);
 
         let timeout = Duration::from_secs(1);
-        if let Some(handle) = &self.handle {
-            match handle.write_bulk(self.write_addr, &send, timeout) {
-                Ok(_) => {
-                    self.counter += 1;
-                    //println!(" - sent: {:02x?}", send);
-                }
-                Err(err) => {
-                    return Err(format!(
-                        "Unable to write request to address: {}, error: {}",
-                        self.write_addr, err
-                    ))
-                }
+        match self.usb_device.handle.write_bulk(self.usb_device.write_addr, &send, timeout) {
+            Ok(_) => {
+                self.counter += 1;
+                //println!(" - sent: {:02x?}", send);
             }
-
-            let mut vec = Vec::<u8>::with_capacity(512);
-            let buf =
-                unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
-
-            let timeout = Duration::from_secs(1);
-            match handle.read_bulk(self.read_addr, buf, timeout) {
-                Ok(len) => {
-                    unsafe { vec.set_len(len) };
-                    //println!(" - read: {:02x?}", vec);
-                }
-                Err(err) => {
-                    return Err(format!(
-                        "Unable to read response from address: {}, error: {}",
-                        self.read_addr, err
-                    ))
-                }
+            Err(err) => {
+                return Err(format!(
+                    "Unable to write request to address: {}, error: {}",
+                    self.usb_device.write_addr, err
+                ))
             }
-
-            let result_code = read_le_i32(&vec[12..16]);
-            if result_code < 0 {
-                return Err(format!("Negative result code: {}", result_code));
-            }
-
-            Ok(vec)
-        } else {
-            Err(format!("Device is not opened!"))
         }
+
+        let mut vec = Vec::<u8>::with_capacity(512);
+        let buf =
+            unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
+
+        let timeout = Duration::from_secs(1);
+        match self.usb_device.handle.read_bulk(self.usb_device.read_addr, buf, timeout) {
+            Ok(len) => {
+                unsafe { vec.set_len(len) };
+                //println!(" - read: {:02x?}", vec);
+            }
+            Err(err) => {
+                return Err(format!(
+                    "Unable to read response from address: {}, error: {}",
+                    self.usb_device.read_addr, err
+                ))
+            }
+        }
+
+        let result_code = read_le_i32(&vec[12..16]);
+        if result_code < 0 {
+            return Err(format!("Negative result code: {}", result_code));
+        }
+
+        Ok(vec)
     }
 
     fn read_data_one_chunk(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         let timeout = Duration::from_secs(10);
-        if let Some(handle) = &self.handle {
-            match handle.read_bulk(self.data_addr, buf, timeout) {
-                Ok(len) => Ok(len),
-                Err(err) => {
-                    return Err(format!(
-                        "Unable to read response from address: {}, error: {}",
-                        self.data_addr, err
-                    ))
-                }
+        match self.usb_device.handle.read_bulk(self.usb_device.data_addr, buf, timeout) {
+            Ok(len) => Ok(len),
+            Err(err) => {
+                return Err(format!(
+                    "Unable to read response from address: {}, error: {}",
+                    self.usb_device.data_addr, err
+                ))
             }
-        } else {
-            Err(format!("Device is not opened!"))
         }
     }
 
