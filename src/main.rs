@@ -8,7 +8,10 @@ use libc::ENOENT;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
+use std::slice;
 
 mod it9910hd_driver;
 use it9910hd_driver::*;
@@ -56,25 +59,27 @@ struct OpenedFileData {
 }
 
 struct IT9910FS {
-    it_driver: Option<IT9910Driver>,
+    data_receiver: Option<Receiver<Vec<u8>>>,
+    terminate_sender: Option<Sender<()>>,
+    thread_ended_receiver: Option<Receiver<()>>,
+
+    buffer: Vec<u8>,
 
     next_fh: u64,
     file_data: HashMap<u64, OpenedFileData>,
-
-    buffer: Vec<u8>,
-    packets_to_read: i32, // always read full 16 packets before doing something else
-                          //buffer_start_offset: usize,
 }
 
 impl IT9910FS {
     pub fn new() -> Result<Self, String> {
         Ok(IT9910FS {
-            it_driver: None,
+            data_receiver: None,
+            terminate_sender: None,
+            thread_ended_receiver: None,
+
+            buffer: Vec::new(),
+
             next_fh: 0,
             file_data: HashMap::new(),
-            buffer: Vec::new(),
-            packets_to_read: 0,
-            //buffer_start_offset: 0,
         })
     }
 }
@@ -124,36 +129,25 @@ impl Filesystem for IT9910FS {
 
     fn open(&mut self, _req: &Request, ino: u64, _flags: u32, reply: ReplyOpen) {
         if ino == 2 {
-            println!("Open");
+            println!("Open {}", self.next_fh);
 
             if self.file_data.len() == 0 {
                 println!("Open device");
 
-                /*let mut libusb_context = match libusb::Context::new() {
-                    Ok(context) => context,
-                    Err(e) => {
-                        eprintln!("could not initialize libusb: {}", e);
-                        reply.error(EIO);
-                        return;
+                let (data_sender, data_receiver) = channel();
+                let (terminate_sender, terminate_receiver) = channel();
+                let (thread_ended_sender, thread_ended_receiver) = channel();
+
+                thread::spawn(move || {
+                    // TODO: handle Err result!
+                    if let Err(err) = run(data_sender, terminate_receiver, thread_ended_sender) {
+                        eprintln!("IT9910 thread error: {}", err);
                     }
-                };*/
+                });
 
-                let mut it_driver = match IT9910Driver::open() {
-                    Ok(it_driver) => it_driver,
-                    Err(err) => {
-                        eprintln!("Unable to find or open IT9910 device: {}", err);
-                        reply.error(EIO);
-                        return;
-                    }
-                };
-
-                if let Err(err) = it_driver.start() {
-                    eprintln!("Unable to start IT9910 device: {}", err);
-                    reply.error(EIO);
-                    return;
-                }
-
-                self.it_driver = Some(it_driver);
+                self.data_receiver = Some(data_receiver);
+                self.terminate_sender = Some(terminate_sender);
+                self.thread_ended_receiver = Some(thread_ended_receiver);
             }
 
             self.file_data.insert(
@@ -162,6 +156,8 @@ impl Filesystem for IT9910FS {
                     current_position: 0,
                 },
             );
+
+            println!("No opened files: {}", self.file_data.len());
 
             reply.opened(self.next_fh, 0);
             self.next_fh += 1;
@@ -179,7 +175,7 @@ impl Filesystem for IT9910FS {
     ) {
         if ino == 2 {
             if let Some(ref mut file_data) = &mut self.file_data.get_mut(&fh) {
-                println!("Read: {}, {}, {}", fh, offset, size);
+                //println!("Read: {}, {}, {}", fh, offset, size);
 
                 if offset as usize != file_data.current_position {
                     // do not support seek operation
@@ -194,25 +190,10 @@ impl Filesystem for IT9910FS {
                     return;
                 }
 
-                if let Some(ref mut it_driver) = &mut self.it_driver {
-                    while needed_size > self.buffer.len() {
-                        //let mut vec = vec![0u8; 16 * 16384];
-                        let mut vec = vec![0u8; 16384];
-                        match it_driver.read_data(&mut vec[..]) {
-                            Ok(n) => {
-                                self.packets_to_read -= 1;
-                                if self.packets_to_read == -1 {
-                                    self.packets_to_read = 15;
-                                }
-                                self.buffer.extend_from_slice(&vec[0..n]);
-                                println!("Packets to read: {}", self.packets_to_read);
-                            }
-                            Err(err) => {
-                                eprintln!("Error reading data from IT9910 device: {}", err);
-                                reply.error(EIO);
-                                return;
-                            }
-                        }
+                while needed_size > self.buffer.len() {
+                    if let Some(data_receiver) = &self.data_receiver {
+                        let packet = data_receiver.recv().unwrap();
+                        self.buffer.extend_from_slice(&packet);
                     }
                 }
 
@@ -267,35 +248,66 @@ impl Filesystem for IT9910FS {
 
         self.file_data.remove(&fh);
 
+        println!("No opened files: {}", self.file_data.len());
+
         if self.file_data.len() == 0 {
             println!("Close device");
 
-            if let Some(ref mut it_driver) = &mut self.it_driver {
-                // read missing packet - always read packets in group of 16
-                let mut vec = vec![0u8; 16384];
-                while self.packets_to_read > 0 {
-                    match it_driver.read_data(&mut vec[..]) {
-                        Ok(n) => {
-                            self.packets_to_read -= 1;
-                        }
-                        Err(err) => {
-                            eprintln!("Error reading data from IT9910 device: {}", err);
-                            reply.error(EIO);
-                            return;
-                        }
-                    }
-                }
-
-                if let Err(err) = it_driver.stop() {
-                    eprintln!("Problem when stopping IT9910 device: {}", err);
-                }
+            if let Some(terminate_sender) = &self.terminate_sender {
+                terminate_sender.send(());
             }
 
-            self.it_driver = None;
+            if let Some(thread_ended_receiver) = &self.thread_ended_receiver {
+                thread_ended_receiver.recv();
+            }
+
+            self.buffer.clear();
         }
 
         reply.ok();
     }
+}
+
+pub fn run(
+    sender: Sender<Vec<u8>>,
+    terminate_receiver: Receiver<()>,
+    thread_ended_sender: Sender<()>,
+) -> Result<(), String> {
+    let mut it_driver = match IT9910Driver::open() {
+        Ok(it_driver) => it_driver,
+        Err(err) => {
+            return Err(format!("Unable to find or open IT9910 device: {}", err));
+        }
+    };
+
+    if let Err(err) = it_driver.start() {
+        return Err(format!("Unable to start IT9910 device: {}", err));
+    }
+
+    loop {
+        for _ in 0..16 {
+            let mut vec = Vec::<u8>::with_capacity(16384);
+            let mut buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
+
+            let len = it_driver.read_data(&mut buf)?;
+            unsafe { vec.set_len(len) };
+
+            sender.send(vec);
+        }
+
+        match terminate_receiver.try_recv() {
+            Ok(_) => break,
+            Err(_) => (),
+        }
+    }
+
+    if let Err(err) = it_driver.stop() {
+        return Err(format!("Problem when stopping IT9910 device: {}", err));
+    }
+
+    thread_ended_sender.send(());
+
+    Ok(())
 }
 
 fn main() -> Result<(), String> {

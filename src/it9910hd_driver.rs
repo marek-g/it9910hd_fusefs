@@ -53,7 +53,7 @@ impl IT9910Driver {
     }
 
     pub fn read_data(&mut self, buf: &mut [u8]) -> Result<usize, String> {
-        println!("ReadData()");
+        //println!("ReadData()");
 
         let mut len = 0usize;
         //for _ in 0..16 {
@@ -79,7 +79,7 @@ impl IT9910Driver {
 
         let result_time = read_le_i32(&received[16..20]);
 
-        println!("DebugQueryTime({}) -> {}", time, result_time);
+        //println!("DebugQueryTime({}) -> {}", time, result_time);
 
         Ok(result_time)
     }
@@ -92,7 +92,7 @@ impl IT9910Driver {
         let audio_source = read_le_i32(&received[16..20]);
         let video_source = read_le_i32(&received[20..24]);
 
-        println!("GetSource() -> ({}, {})", audio_source, video_source);
+        //println!("GetSource() -> ({}, {})", audio_source, video_source);
 
         Ok((audio_source, video_source))
     }
@@ -104,7 +104,7 @@ impl IT9910Driver {
         write_le_i32(&mut buf[20..24], video_source);
 
         let _received = self.send_command(&mut buf, 0x99100003, 2)?;
-        println!("SetSource() -> ({}, {})", audio_source, video_source);
+        //println!("SetSource() -> ({}, {})", audio_source, video_source);
 
         Ok(())
     }
@@ -117,7 +117,7 @@ impl IT9910Driver {
 
         let _received = self.send_command(&mut buf, 0x9910E001, 2)?;
 
-        println!("SetPCGrabber({})", start);
+        //println!("SetPCGrabber({})", start);
 
         Ok(())
     }
@@ -144,7 +144,7 @@ impl IT9910Driver {
 
         let _received = self.send_command(&mut buf, 0x9910E001, 2)?;
 
-        println!("SetPCGrabber2({})", counter);
+        //println!("SetPCGrabber2({})", counter);
 
         Ok(())
     }
@@ -158,7 +158,7 @@ impl IT9910Driver {
 
         let result = read_le_i32(&received[24..28]);
 
-        println!("GetPCGrabber() -> {}", result);
+        //println!("GetPCGrabber() -> {}", result);
 
         Ok(result)
     }
@@ -170,7 +170,7 @@ impl IT9910Driver {
 
         let received = self.send_command(&mut buf, 0x9910F002, 1)?;
 
-        println!("GetHWGrabber()");
+        //println!("GetHWGrabber()");
 
         let device_model = match received[31] {
             0x17 => 0,
@@ -255,14 +255,14 @@ impl IT9910Driver {
 
     fn read_data_one_chunk(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         let timeout = Duration::from_secs(10);
-        println!("Read one chunk, buf size: {}", buf.len());
+        //println!("Read one chunk, buf size: {}", buf.len());
         match self
             .usb_device
             .handle
             .read_bulk(self.usb_device.data_addr, buf, timeout)
         {
             Ok(len) => {
-                println!("Read: {} bytes", len);
+                //println!("Read: {} bytes", len);
                 Ok(len)
             }
             Err(err) => {
@@ -273,33 +273,6 @@ impl IT9910Driver {
             }
         }
     }
-
-    /*fn read_data(&mut self) -> Result<Vec<u8>, String> {
-        let mut vec = Vec::<u8>::with_capacity(16384);
-        let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
-
-        let timeout = Duration::from_secs(15);
-        if let Some(handle) = &self.handle {
-            match handle.read_bulk(self.data_addr, buf, timeout) {
-                Ok(len) => {
-                    unsafe { vec.set_len(len) };
-                    //println!(" - read: {} bytes", vec.len());
-                }
-                Err(err) => {
-                    return Err(format!(
-                        "Unable to read response from address: {}, error: {}",
-                        self.data_addr, err
-                    ))
-                }
-            }
-
-            println!("ReadData()");
-
-            Ok(vec)
-        } else {
-            Err(format!("Device is not opened!"))
-        }
-    }*/
 }
 
 fn read_le_i32(input: &[u8]) -> i32 {
