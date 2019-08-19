@@ -1,6 +1,6 @@
+use crate::usb_wrapper::UsbWrapper;
 use std::slice;
 use std::time::Duration;
-use crate::usb_wrapper::UsbWrapper;
 
 pub struct IT9910Driver {
     usb_device: UsbWrapper,
@@ -56,9 +56,9 @@ impl IT9910Driver {
         println!("ReadData()");
 
         let mut len = 0usize;
-        for _ in 0..16 {
-            len += self.read_data_one_chunk(&mut buf[len..])?;
-        }
+        //for _ in 0..16 {
+        len += self.read_data_one_chunk(&mut buf[len..])?;
+        //}
 
         Ok(len)
     }
@@ -207,7 +207,11 @@ impl IT9910Driver {
         write_le_u32(&mut send[12..16], 0x99100000 | self.counter);
 
         let timeout = Duration::from_secs(1);
-        match self.usb_device.handle.write_bulk(self.usb_device.write_addr, &send, timeout) {
+        match self
+            .usb_device
+            .handle
+            .write_bulk(self.usb_device.write_addr, &send, timeout)
+        {
             Ok(_) => {
                 self.counter += 1;
                 //println!(" - sent: {:02x?}", send);
@@ -221,11 +225,14 @@ impl IT9910Driver {
         }
 
         let mut vec = Vec::<u8>::with_capacity(512);
-        let buf =
-            unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
+        let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
 
         let timeout = Duration::from_secs(1);
-        match self.usb_device.handle.read_bulk(self.usb_device.read_addr, buf, timeout) {
+        match self
+            .usb_device
+            .handle
+            .read_bulk(self.usb_device.read_addr, buf, timeout)
+        {
             Ok(len) => {
                 unsafe { vec.set_len(len) };
                 //println!(" - read: {:02x?}", vec);
@@ -248,8 +255,16 @@ impl IT9910Driver {
 
     fn read_data_one_chunk(&mut self, buf: &mut [u8]) -> Result<usize, String> {
         let timeout = Duration::from_secs(10);
-        match self.usb_device.handle.read_bulk(self.usb_device.data_addr, buf, timeout) {
-            Ok(len) => Ok(len),
+        println!("Read one chunk, buf size: {}", buf.len());
+        match self
+            .usb_device
+            .handle
+            .read_bulk(self.usb_device.data_addr, buf, timeout)
+        {
+            Ok(len) => {
+                println!("Read: {} bytes", len);
+                Ok(len)
+            }
             Err(err) => {
                 return Err(format!(
                     "Unable to read response from address: {}, error: {}",

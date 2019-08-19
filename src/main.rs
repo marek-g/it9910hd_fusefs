@@ -36,7 +36,7 @@ const DIR_ATTR: FileAttr = FileAttr {
 
 const HDMI_STREAM_TS_ATTR: FileAttr = FileAttr {
     ino: 2,
-    size: 0, // 512 * 1024 * 1024 * 1024,
+    size: 128 * 1024 * 1024 * 1024,
     blocks: 0,
     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
     mtime: UNIX_EPOCH,
@@ -186,7 +186,7 @@ impl Filesystem for IT9910FS {
                 }
 
                 let needed_size = offset as usize + size as usize;
-                if needed_size - self.buffer.len() > 4 * 1024 * 1024 {
+                if needed_size > self.buffer.len() + 4 * 1024 * 1024 {
                     // do not read so far ahead
                     reply.error(ENOENT);
                     return;
