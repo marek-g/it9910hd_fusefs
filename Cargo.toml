@@ -10,3 +10,4 @@ edition = "2018"
 libusb = "0.3"
 fuse = { git = "https://github.com/zargony/rust-fuse" }
 libc = "0.2"
+clap = "2"

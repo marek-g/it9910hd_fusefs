@@ -15,7 +15,11 @@ impl IT9910Driver {
         })
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
+    pub fn start(&mut self,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32) -> Result<(), String> {
         //self.debug_query_time(1)?;
         //self.set_pc_grabber(0)?;
 
@@ -42,7 +46,7 @@ impl IT9910Driver {
         }
 
         for i in 0..35 {
-            self.set_pc_grabber2(device_model, i, 1920, 1080, 10000, 30)?;
+            self.set_pc_grabber2(device_model, i, width, height, bitrate, fps)?;
         }
 
         //self.debug_query_time(1)?;

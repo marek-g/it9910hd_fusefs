@@ -1,3 +1,4 @@
+use clap::{value_t, App, Arg};
 use fuse::ReplyEmpty;
 use fuse::ReplyOpen;
 use fuse::{
@@ -8,10 +9,10 @@ use libc::ENOENT;
 use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
+use std::slice;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
-use std::slice;
 
 mod it9910hd_driver;
 use it9910hd_driver::*;
@@ -59,6 +60,12 @@ struct OpenedFileData {
 }
 
 struct IT9910FS {
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate: u32,
+    buffer_max_len: u32,
+
     data_receiver: Option<Receiver<Vec<u8>>>,
     terminate_sender: Option<Sender<()>>,
     thread_ended_receiver: Option<Receiver<()>>,
@@ -70,8 +77,20 @@ struct IT9910FS {
 }
 
 impl IT9910FS {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bitrate: u32,
+        buffer_max_len: u32,
+    ) -> Result<Self, String> {
         Ok(IT9910FS {
+            width: width,
+            height: height,
+            fps: fps,
+            bitrate: bitrate,
+            buffer_max_len: buffer_max_len,
+
             data_receiver: None,
             terminate_sender: None,
             thread_ended_receiver: None,
@@ -138,9 +157,21 @@ impl Filesystem for IT9910FS {
                 let (terminate_sender, terminate_receiver) = channel();
                 let (thread_ended_sender, thread_ended_receiver) = channel();
 
+                let width = self.width;
+                let height = self.height;
+                let fps = self.fps;
+                let bitrate = self.bitrate;
+
                 thread::spawn(move || {
                     // TODO: handle Err result!
-                    if let Err(err) = run(data_sender, terminate_receiver, thread_ended_sender) {
+                    if let Err(err) = run(
+                        data_sender,
+                        terminate_receiver,
+                        thread_ended_sender,
+                        width,
+                        height,
+                        fps,
+                        bitrate) {
                         eprintln!("IT9910 thread error: {}", err);
                     }
                 });
@@ -272,6 +303,10 @@ pub fn run(
     sender: Sender<Vec<u8>>,
     terminate_receiver: Receiver<()>,
     thread_ended_sender: Sender<()>,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate: u32,
 ) -> Result<(), String> {
     let mut it_driver = match IT9910Driver::open() {
         Ok(it_driver) => it_driver,
@@ -280,14 +315,15 @@ pub fn run(
         }
     };
 
-    if let Err(err) = it_driver.start() {
+    if let Err(err) = it_driver.start(width, height, fps, bitrate) {
         return Err(format!("Unable to start IT9910 device: {}", err));
     }
 
     loop {
         for _ in 0..16 {
             let mut vec = Vec::<u8>::with_capacity(16384);
-            let mut buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
+            let mut buf =
+                unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
 
             let len = it_driver.read_data(&mut buf)?;
             unsafe { vec.set_len(len) };
@@ -311,14 +347,66 @@ pub fn run(
 }
 
 fn main() -> Result<(), String> {
-    //env_logger::init();
-    let mountpoint = env::args_os().nth(1).unwrap();
+    let matches = App::new("IT9910HD FuseFS")
+        .version("1.0")
+        .author("Marek Gibek")
+        .arg(
+            Arg::with_name("width")
+                .help("video width, can be: 1920, 1280, 720")
+                .short("w")
+                .long("width")
+                .takes_value(true)
+                .default_value("1920"),
+        )
+        .arg(
+            Arg::with_name("height")
+                .help("video height, can be: 1080, 720, 576, 480")
+                .short("h")
+                .long("height")
+                .default_value("1080"),
+        )
+        .arg(
+            Arg::with_name("fps")
+                .help("video framerate, for example 25, 30 etc.")
+                .short("f")
+                .long("fps")
+                .default_value("25"),
+        )
+        .arg(
+            Arg::with_name("bitrate")
+                .help("video bitrate, can be between 2000..20000")
+                .short("b")
+                .long("bitrate")
+                .default_value("10000"),
+        )
+        .arg(
+            Arg::with_name("buffer_len")
+                .help("buffer size in MB")
+                .short("l")
+                .long("buffer_len")
+                .default_value("100"),
+        )
+        .arg(
+            Arg::with_name("dir")
+                .help("mountpoint for video filesystem")
+                .index(1)
+                .required(true),
+        )
+        .get_matches();
+
+    let width = value_t!(matches, "width", u32).unwrap_or(1920);
+    let height = value_t!(matches, "height", u32).unwrap_or(1080);
+    let fps = value_t!(matches, "fps", u32).unwrap_or(25);
+    let bitrate = value_t!(matches, "bitrate", u32).unwrap_or(10000);
+    let buffer_len = value_t!(matches, "buffer_len", u32).unwrap_or(100);
+    let mountpoint = matches.value_of("dir").unwrap();
+
     let options = ["-o", "ro", "-o", "fsname=it9910fs"]
         .iter()
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
 
-    let it9910fs = IT9910FS::new()?;
+    let it9910fs = IT9910FS::new(width, height, fps, bitrate, buffer_len)?;
 
     fuse::mount(it9910fs, mountpoint, &options).unwrap();
 
