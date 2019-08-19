@@ -62,7 +62,8 @@ struct IT9910FS {
     file_data: HashMap<u64, OpenedFileData>,
 
     buffer: Vec<u8>,
-    //buffer_start_offset: usize,
+    packets_to_read: i32, // always read full 16 packets before doing something else
+                          //buffer_start_offset: usize,
 }
 
 impl IT9910FS {
@@ -72,6 +73,7 @@ impl IT9910FS {
             next_fh: 0,
             file_data: HashMap::new(),
             buffer: Vec::new(),
+            packets_to_read: 0,
             //buffer_start_offset: 0,
         })
     }
@@ -194,10 +196,16 @@ impl Filesystem for IT9910FS {
 
                 if let Some(ref mut it_driver) = &mut self.it_driver {
                     while needed_size > self.buffer.len() {
-                        let mut vec = vec![0u8; 16 * 16384];
+                        //let mut vec = vec![0u8; 16 * 16384];
+                        let mut vec = vec![0u8; 16384];
                         match it_driver.read_data(&mut vec[..]) {
                             Ok(n) => {
+                                self.packets_to_read -= 1;
+                                if self.packets_to_read == -1 {
+                                    self.packets_to_read = 15;
+                                }
                                 self.buffer.extend_from_slice(&vec[0..n]);
+                                println!("Packets to read: {}", self.packets_to_read);
                             }
                             Err(err) => {
                                 eprintln!("Error reading data from IT9910 device: {}", err);
@@ -263,6 +271,21 @@ impl Filesystem for IT9910FS {
             println!("Close device");
 
             if let Some(ref mut it_driver) = &mut self.it_driver {
+                // read missing packet - always read packets in group of 16
+                let mut vec = vec![0u8; 16384];
+                while self.packets_to_read > 0 {
+                    match it_driver.read_data(&mut vec[..]) {
+                        Ok(n) => {
+                            self.packets_to_read -= 1;
+                        }
+                        Err(err) => {
+                            eprintln!("Error reading data from IT9910 device: {}", err);
+                            reply.error(EIO);
+                            return;
+                        }
+                    }
+                }
+
                 if let Err(err) = it_driver.stop() {
                     eprintln!("Problem when stopping IT9910 device: {}", err);
                 }

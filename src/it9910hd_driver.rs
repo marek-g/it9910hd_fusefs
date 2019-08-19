@@ -206,7 +206,7 @@ impl IT9910Driver {
         write_le_u32(&mut send[8..12], subcommand_id);
         write_le_u32(&mut send[12..16], 0x99100000 | self.counter);
 
-        let timeout = Duration::from_secs(1);
+        let timeout = Duration::from_secs(5);
         match self
             .usb_device
             .handle
@@ -227,7 +227,7 @@ impl IT9910Driver {
         let mut vec = Vec::<u8>::with_capacity(512);
         let buf = unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
 
-        let timeout = Duration::from_secs(1);
+        let timeout = Duration::from_secs(5);
         match self
             .usb_device
             .handle
