@@ -7,7 +7,6 @@ use fuse::{
 use libc::EIO;
 use libc::ENOENT;
 use std::collections::HashMap;
-use std::env;
 use std::ffi::OsStr;
 use std::slice;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -64,6 +63,8 @@ struct IT9910FS {
     height: u32,
     fps: u32,
     bitrate: u32,
+    audio_src: u32,
+    video_src: u32,
     buffer_max_len: u32,
 
     data_receiver: Option<Receiver<Vec<u8>>>,
@@ -82,6 +83,8 @@ impl IT9910FS {
         height: u32,
         fps: u32,
         bitrate: u32,
+        audio_src: u32,
+        video_src: u32,
         buffer_max_len: u32,
     ) -> Result<Self, String> {
         Ok(IT9910FS {
@@ -89,6 +92,8 @@ impl IT9910FS {
             height: height,
             fps: fps,
             bitrate: bitrate,
+            audio_src: audio_src,
+            video_src: video_src,
             buffer_max_len: buffer_max_len,
 
             data_receiver: None,
@@ -161,6 +166,8 @@ impl Filesystem for IT9910FS {
                 let height = self.height;
                 let fps = self.fps;
                 let bitrate = self.bitrate;
+                let audio_src = self.audio_src;
+                let video_src = self.video_src;
 
                 thread::spawn(move || {
                     // TODO: handle Err result!
@@ -171,7 +178,10 @@ impl Filesystem for IT9910FS {
                         width,
                         height,
                         fps,
-                        bitrate) {
+                        bitrate,
+                        audio_src,
+                        video_src,
+                    ) {
                         eprintln!("IT9910 thread error: {}", err);
                     }
                 });
@@ -307,6 +317,8 @@ pub fn run(
     height: u32,
     fps: u32,
     bitrate: u32,
+    audio_src: u32,
+    video_src: u32,
 ) -> Result<(), String> {
     let mut it_driver = match IT9910Driver::open() {
         Ok(it_driver) => it_driver,
@@ -315,7 +327,7 @@ pub fn run(
         }
     };
 
-    if let Err(err) = it_driver.start(width, height, fps, bitrate) {
+    if let Err(err) = it_driver.start(width, height, fps, bitrate, audio_src, video_src) {
         return Err(format!("Unable to start IT9910 device: {}", err));
     }
 
@@ -380,6 +392,20 @@ fn main() -> Result<(), String> {
                 .default_value("10000"),
         )
         .arg(
+            Arg::with_name("audio_src")
+                .help("audio source")
+                .short("a")
+                .long("audio_src")
+                .default_value("2"),
+        )
+        .arg(
+            Arg::with_name("video_src")
+                .help("video source")
+                .short("v")
+                .long("video_src")
+                .default_value("4"),
+        )
+        .arg(
             Arg::with_name("buffer_len")
                 .help("buffer size in MB")
                 .short("l")
@@ -398,6 +424,8 @@ fn main() -> Result<(), String> {
     let height = value_t!(matches, "height", u32).unwrap_or(1080);
     let fps = value_t!(matches, "fps", u32).unwrap_or(25);
     let bitrate = value_t!(matches, "bitrate", u32).unwrap_or(10000);
+    let audio_src = value_t!(matches, "audio_src", u32).unwrap_or(2);
+    let video_src = value_t!(matches, "video_src", u32).unwrap_or(4);
     let buffer_len = value_t!(matches, "buffer_len", u32).unwrap_or(100);
     let mountpoint = matches.value_of("dir").unwrap();
 
@@ -406,7 +434,9 @@ fn main() -> Result<(), String> {
         .map(|o| o.as_ref())
         .collect::<Vec<&OsStr>>();
 
-    let it9910fs = IT9910FS::new(width, height, fps, bitrate, buffer_len)?;
+    let it9910fs = IT9910FS::new(
+        width, height, fps, bitrate, audio_src, video_src, buffer_len,
+    )?;
 
     fuse::mount(it9910fs, mountpoint, &options).unwrap();
 

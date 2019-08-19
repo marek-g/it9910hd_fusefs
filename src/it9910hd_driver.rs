@@ -19,7 +19,9 @@ impl IT9910Driver {
         width: u32,
         height: u32,
         fps: u32,
-        bitrate: u32) -> Result<(), String> {
+        bitrate: u32,
+        audio_src: u32,
+        video_src: u32) -> Result<(), String> {
         //self.debug_query_time(1)?;
         //self.set_pc_grabber(0)?;
 
@@ -42,7 +44,7 @@ impl IT9910Driver {
 
         let device_model = self.get_hw_grabber()?;
         if device_model == 2 {
-            self.set_source(2, 4)?;
+            self.set_source(audio_src, video_src)?;
         }
 
         for i in 0..35 {
@@ -101,11 +103,11 @@ impl IT9910Driver {
         Ok((audio_source, video_source))
     }
 
-    fn set_source(&mut self, audio_source: i32, video_source: i32) -> Result<(), String> {
+    fn set_source(&mut self, audio_source: u32, video_source: u32) -> Result<(), String> {
         let mut buf = [0u8; 16 + 4 * 2];
 
-        write_le_i32(&mut buf[16..20], audio_source);
-        write_le_i32(&mut buf[20..24], video_source);
+        write_le_u32(&mut buf[16..20], audio_source);
+        write_le_u32(&mut buf[20..24], video_source);
 
         let _received = self.send_command(&mut buf, 0x99100003, 2)?;
         //println!("SetSource() -> ({}, {})", audio_source, video_source);
