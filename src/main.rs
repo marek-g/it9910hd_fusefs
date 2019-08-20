@@ -236,6 +236,8 @@ impl Filesystem for IT9910FS {
         reply: ReplyData,
     ) {
         if ino == 2 {
+            let mut failed = false;
+
             if let Some(ref mut file_data) = &mut self.file_data.get_mut(&fh) {
                 //println!("Read: {}, {}, {}", fh, offset, size);
 
@@ -265,17 +267,32 @@ impl Filesystem for IT9910FS {
                         self.last_packet_pos += to_copy;
                     } else {
                         if let Some(data_receiver) = &mut self.data_receiver {
-                            self.last_packet = data_receiver.recv().unwrap();
+                            self.last_packet = match data_receiver.recv() {
+                                Ok(packet) => packet,
+                                Err(err) => {
+                                    eprintln!("Error during data receiving: {}", err);
+                                    failed = true;
+                                    break;
+                                }
+                            };
                             self.last_packet_pos = 0;
                         }
                     }
                 }
 
-                reply.data(&self.read_buffer[0..size as usize]);
+                if failed {
+                    reply.error(EIO);
+                } else {
+                    reply.data(&self.read_buffer[0..size as usize]);
+                }
 
                 file_data.current_position += size as usize;
             } else {
                 reply.error(ENOENT);
+            }
+
+            if failed {
+                self.file_data.remove(&fh);
             }
         } else {
             reply.error(ENOENT);
