@@ -12,6 +12,7 @@ use std::slice;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, UNIX_EPOCH};
+use thread_priority::*;
 
 mod it9910hd_driver;
 use it9910hd_driver::*;
@@ -170,6 +171,15 @@ impl Filesystem for IT9910FS {
                 let video_src = self.video_src;
 
                 thread::spawn(move || {
+                    let thread_id = thread_native_id();
+                    if let Err(err) = set_thread_priority(
+                        thread_id,
+                        ThreadPriority::Max,
+                        ThreadSchedulePolicy::Normal(NormalThreadSchedulePolicy::Normal),
+                    ) {
+                        eprintln!("Warning! Cannot set thread priority: {:?}", err);
+                    }
+
                     // TODO: handle Err result!
                     if let Err(err) = run(
                         data_sender,
@@ -218,11 +228,11 @@ impl Filesystem for IT9910FS {
             if let Some(ref mut file_data) = &mut self.file_data.get_mut(&fh) {
                 //println!("Read: {}, {}, {}", fh, offset, size);
 
-                if offset as usize != file_data.current_position {
+                /*if offset as usize != file_data.current_position {
                     // do not support seek operation
                     reply.error(ENOENT);
                     return;
-                }
+                }*/
 
                 let needed_size = offset as usize + size as usize;
                 if needed_size > self.buffer.len() + 4 * 1024 * 1024 {
@@ -386,10 +396,10 @@ fn main() -> Result<(), String> {
         )
         .arg(
             Arg::with_name("bitrate")
-                .help("video bitrate, can be between 2000..20000")
+                .help("video bitrate, can be between 2000..52000")
                 .short("b")
                 .long("bitrate")
-                .default_value("10000"),
+                .default_value("20000"),
         )
         .arg(
             Arg::with_name("audio_src")
@@ -423,11 +433,20 @@ fn main() -> Result<(), String> {
     let width = value_t!(matches, "width", u32).unwrap_or(1920);
     let height = value_t!(matches, "height", u32).unwrap_or(1080);
     let fps = value_t!(matches, "fps", u32).unwrap_or(25);
-    let bitrate = value_t!(matches, "bitrate", u32).unwrap_or(10000);
+    let bitrate = value_t!(matches, "bitrate", u32).unwrap_or(20000);
     let audio_src = value_t!(matches, "audio_src", u32).unwrap_or(2);
     let video_src = value_t!(matches, "video_src", u32).unwrap_or(4);
     let buffer_len = value_t!(matches, "buffer_len", u32).unwrap_or(100);
     let mountpoint = matches.value_of("dir").unwrap();
+
+    println!("IT9910HD FuseFS.");
+    println!(
+        "Resolution: {}x{}, {} fps, {} kbps.",
+        width, height, fps, bitrate
+    );
+    println!("Audio Src: {}, video src: {}", audio_src, video_src);
+    println!("Buffer: {} MB", buffer_len);
+    println!("--------");
 
     let options = ["-o", "ro", "-o", "fsname=it9910fs"]
         .iter()
