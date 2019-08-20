@@ -40,7 +40,7 @@ const DIR_ATTR: FileAttr = FileAttr {
 
 const HDMI_STREAM_TS_ATTR: FileAttr = FileAttr {
     ino: 2,
-    size: 128 * 1024 * 1024 * 1024,
+    size: 512 * 1024 * 1024 * 1024,
     blocks: 0,
     atime: UNIX_EPOCH, // 1970-01-01 00:00:00
     mtime: UNIX_EPOCH,
@@ -66,13 +66,14 @@ struct IT9910FS {
     bitrate: u32,
     audio_src: u32,
     video_src: u32,
-    buffer_max_len: u32,
-
+    //buffer_max_len: u32,
     data_receiver: Option<Receiver<Vec<u8>>>,
     terminate_sender: Option<Sender<()>>,
     thread_ended_receiver: Option<Receiver<()>>,
 
-    buffer: Vec<u8>,
+    read_buffer: Vec<u8>,
+    last_packet: Vec<u8>,
+    last_packet_pos: usize,
 
     next_fh: u64,
     file_data: HashMap<u64, OpenedFileData>,
@@ -86,7 +87,7 @@ impl IT9910FS {
         bitrate: u32,
         audio_src: u32,
         video_src: u32,
-        buffer_max_len: u32,
+        //buffer_max_len: u32,
     ) -> Result<Self, String> {
         Ok(IT9910FS {
             width: width,
@@ -95,13 +96,14 @@ impl IT9910FS {
             bitrate: bitrate,
             audio_src: audio_src,
             video_src: video_src,
-            buffer_max_len: buffer_max_len,
-
+            //buffer_max_len: buffer_max_len,
             data_receiver: None,
             terminate_sender: None,
             thread_ended_receiver: None,
 
-            buffer: Vec::new(),
+            read_buffer: vec![0u8; 1024 * 1024],
+            last_packet: Vec::new(),
+            last_packet_pos: 0,
 
             next_fh: 0,
             file_data: HashMap::new(),
@@ -156,6 +158,13 @@ impl Filesystem for IT9910FS {
         if ino == 2 {
             println!("Open {}", self.next_fh);
 
+            if self.file_data.len() == 1 {
+                // currently do not support more than one client
+                eprintln!("Sorry! More than one client is currently not supported!");
+                reply.error(EIO);
+                return;
+            }
+
             if self.file_data.len() == 0 {
                 println!("Open device");
 
@@ -199,6 +208,8 @@ impl Filesystem for IT9910FS {
                 self.data_receiver = Some(data_receiver);
                 self.terminate_sender = Some(terminate_sender);
                 self.thread_ended_receiver = Some(thread_ended_receiver);
+                self.last_packet = Vec::new();
+                self.last_packet_pos = 0;
             }
 
             self.file_data.insert(
@@ -228,55 +239,41 @@ impl Filesystem for IT9910FS {
             if let Some(ref mut file_data) = &mut self.file_data.get_mut(&fh) {
                 //println!("Read: {}, {}, {}", fh, offset, size);
 
-                /*if offset as usize != file_data.current_position {
+                if offset as usize != file_data.current_position {
                     // do not support seek operation
                     reply.error(ENOENT);
                     return;
-                }*/
+                }
 
-                let needed_size = offset as usize + size as usize;
-                if needed_size > self.buffer.len() + 4 * 1024 * 1024 {
-                    // do not read so far ahead
+                if size as usize > self.read_buffer.len() {
+                    // do not read more than read buffer size
                     reply.error(ENOENT);
                     return;
                 }
 
-                while needed_size > self.buffer.len() {
-                    if let Some(data_receiver) = &self.data_receiver {
-                        let packet = data_receiver.recv().unwrap();
-                        self.buffer.extend_from_slice(&packet);
+                let mut to_read = size as usize;
+                let mut position = 0usize;
+                while to_read > 0 {
+                    let last_packet_size = self.last_packet.len() - self.last_packet_pos;
+                    if last_packet_size > 0 {
+                        let to_copy = to_read.min(last_packet_size);
+                        (&mut self.read_buffer[position..position + to_copy]).copy_from_slice(
+                            &self.last_packet[self.last_packet_pos..self.last_packet_pos + to_copy],
+                        );
+                        to_read -= to_copy;
+                        position += to_copy;
+                        self.last_packet_pos += to_copy;
+                    } else {
+                        if let Some(data_receiver) = &mut self.data_receiver {
+                            self.last_packet = data_receiver.recv().unwrap();
+                            self.last_packet_pos = 0;
+                        }
                     }
                 }
 
-                reply.data(&self.buffer[offset as usize..needed_size]);
+                reply.data(&self.read_buffer[0..size as usize]);
 
                 file_data.current_position += size as usize;
-
-            /*let mut vec = Vec::with_capacity(_size as usize);
-            while vec.len() < _size as usize {
-                let need_new_buffer = if let Some(last_buffer) = &self.last_buffer {
-                    self.last_buffer_pos >= last_buffer.len()
-                } else {
-                    true
-                };
-
-                if need_new_buffer {
-                    self.last_buffer_pos = 0;
-                    if let Some(data_receiver) = &self.data_receiver {
-                        self.last_buffer = Some(data_receiver.recv().unwrap());
-                    }
-                }
-
-                if let Some(last_buffer) = &self.last_buffer {
-                    let size = (last_buffer.len() - self.last_buffer_pos).min(_size as usize);
-                    vec.extend_from_slice(
-                        &last_buffer[self.last_buffer_pos..self.last_buffer_pos + size],
-                    );
-                    self.last_buffer_pos += size;
-                }
-            }*/
-
-            //reply.data(&vec);
             } else {
                 reply.error(ENOENT);
             }
@@ -311,8 +308,6 @@ impl Filesystem for IT9910FS {
             if let Some(thread_ended_receiver) = &self.thread_ended_receiver {
                 thread_ended_receiver.recv();
             }
-
-            self.buffer.clear();
         }
 
         reply.ok();
@@ -415,13 +410,13 @@ fn main() -> Result<(), String> {
                 .long("video_src")
                 .default_value("4"),
         )
-        .arg(
+        /*.arg(
             Arg::with_name("buffer_len")
                 .help("buffer size in MB")
                 .short("l")
                 .long("buffer_len")
                 .default_value("100"),
-        )
+        )*/
         .arg(
             Arg::with_name("dir")
                 .help("mountpoint for video filesystem")
@@ -436,7 +431,7 @@ fn main() -> Result<(), String> {
     let bitrate = value_t!(matches, "bitrate", u32).unwrap_or(20000);
     let audio_src = value_t!(matches, "audio_src", u32).unwrap_or(2);
     let video_src = value_t!(matches, "video_src", u32).unwrap_or(4);
-    let buffer_len = value_t!(matches, "buffer_len", u32).unwrap_or(100);
+    //let buffer_len = value_t!(matches, "buffer_len", u32).unwrap_or(100);
     let mountpoint = matches.value_of("dir").unwrap();
 
     println!("IT9910HD FuseFS.");
@@ -445,7 +440,7 @@ fn main() -> Result<(), String> {
         width, height, fps, bitrate
     );
     println!("Audio Src: {}, video src: {}", audio_src, video_src);
-    println!("Buffer: {} MB", buffer_len);
+    //println!("Buffer: {} MB", buffer_len);
     println!("--------");
 
     let options = ["-o", "ro", "-o", "fsname=it9910fs"]
@@ -454,7 +449,7 @@ fn main() -> Result<(), String> {
         .collect::<Vec<&OsStr>>();
 
     let it9910fs = IT9910FS::new(
-        width, height, fps, bitrate, audio_src, video_src, buffer_len,
+        width, height, fps, bitrate, audio_src, video_src, //buffer_len,
     )?;
 
     fuse::mount(it9910fs, mountpoint, &options).unwrap();
