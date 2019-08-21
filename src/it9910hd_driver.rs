@@ -15,13 +15,15 @@ impl IT9910Driver {
         })
     }
 
-    pub fn start(&mut self,
+    pub fn start(
+        &mut self,
         width: u32,
         height: u32,
         fps: u32,
         bitrate: u32,
         audio_src: u32,
-        video_src: u32) -> Result<(), String> {
+        video_src: u32,
+    ) -> Result<(), String> {
         //self.debug_query_time(1)?;
         //self.set_pc_grabber(0)?;
 
@@ -72,6 +74,14 @@ impl IT9910Driver {
     pub fn stop(&mut self) -> Result<(), String> {
         self.set_state(0)?;
         self.set_pc_grabber(0)?;
+        loop {
+            let res = self.get_pc_grabber()?;
+            if res == 0 {
+                break;
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
 
         Ok(())
     }

@@ -354,7 +354,7 @@ pub fn run(
     }
 
     loop {
-        for _ in 0..16 {
+        loop {
             let mut vec = Vec::<u8>::with_capacity(16384);
             let mut buf =
                 unsafe { slice::from_raw_parts_mut((&mut vec[..]).as_mut_ptr(), vec.capacity()) };
@@ -363,6 +363,10 @@ pub fn run(
             unsafe { vec.set_len(len) };
 
             sender.send(vec);
+
+            if len < 16384 {
+                break;
+            }
         }
 
         match terminate_receiver.try_recv() {
