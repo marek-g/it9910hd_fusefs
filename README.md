@@ -4,7 +4,7 @@ FUSE File System driver for IT9910HD HDMI MPEG4 (H.264) capture device.
 
 ![MPV screenshot](doc/mpv.jpg)
 
-## Limitations of current version
+## Limitations of the current version
 
 * Only one client can stream video (open video file) at the same time.
 * Only sequential reads are supported (no file seeking). Works with `mpv` player or `cp` command.
@@ -50,3 +50,7 @@ mpv -hwdec=auto --record-file=./video.ts ./video/hdmi_stream.ts
 umount ./video
 rmdir ./video
 ```
+
+## License
+
+Public Domain (unless stated otherwise in source code header),
