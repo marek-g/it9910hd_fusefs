@@ -66,7 +66,11 @@ struct IT9910FS {
     bitrate: u32,
     audio_src: u32,
     video_src: u32,
-    //buffer_max_len: u32,
+    brightness: i32,
+    constrast: i32,
+    hue: i32,
+    saturation: i32,
+
     data_receiver: Option<Receiver<Vec<u8>>>,
     terminate_sender: Option<Sender<()>>,
     thread_ended_receiver: Option<Receiver<()>>,
@@ -87,7 +91,10 @@ impl IT9910FS {
         bitrate: u32,
         audio_src: u32,
         video_src: u32,
-        //buffer_max_len: u32,
+        brightness: i32,
+        constrast: i32,
+        hue: i32,
+        saturation: i32,
     ) -> Result<Self, String> {
         Ok(IT9910FS {
             width: width,
@@ -96,7 +103,11 @@ impl IT9910FS {
             bitrate: bitrate,
             audio_src: audio_src,
             video_src: video_src,
-            //buffer_max_len: buffer_max_len,
+            brightness: brightness,
+            constrast: constrast,
+            hue: hue,
+            saturation: saturation,
+
             data_receiver: None,
             terminate_sender: None,
             thread_ended_receiver: None,
@@ -178,6 +189,10 @@ impl Filesystem for IT9910FS {
                 let bitrate = self.bitrate;
                 let audio_src = self.audio_src;
                 let video_src = self.video_src;
+                let brightness = self.brightness;
+                let contrast = self.constrast;
+                let hue = self.hue;
+                let saturation = self.saturation;
 
                 thread::spawn(move || {
                     let thread_id = thread_native_id();
@@ -200,6 +215,10 @@ impl Filesystem for IT9910FS {
                         bitrate,
                         audio_src,
                         video_src,
+                        brightness,
+                        contrast,
+                        hue,
+                        saturation,
                     ) {
                         eprintln!("IT9910 thread error: {}", err);
                     }
@@ -341,6 +360,10 @@ pub fn run(
     bitrate: u32,
     audio_src: u32,
     video_src: u32,
+    brightness: i32,
+    constrast: i32,
+    hue: i32,
+    saturation: i32,
 ) -> Result<(), String> {
     let mut it_driver = match IT9910Driver::open() {
         Ok(it_driver) => it_driver,
@@ -349,7 +372,9 @@ pub fn run(
         }
     };
 
-    if let Err(err) = it_driver.start(width, height, fps, bitrate, audio_src, video_src) {
+    if let Err(err) = it_driver.start(
+        width, height, fps, bitrate, audio_src, video_src, brightness, constrast, hue, saturation,
+    ) {
         return Err(format!("Unable to start IT9910 device: {}", err));
     }
 
@@ -431,13 +456,30 @@ fn main() -> Result<(), String> {
                 .long("video_src")
                 .default_value("4"),
         )
-        /*.arg(
-            Arg::with_name("buffer_len")
-                .help("buffer size in MB")
-                .short("l")
-                .long("buffer_len")
+        .arg(
+            Arg::with_name("brightness")
+                .help("brightness, range: -100..100")
+                .long("brightness")
+                .default_value("0"),
+        )
+        .arg(
+            Arg::with_name("contrast")
+                .help("contrast, range: 0..1000")
+                .long("contrast")
                 .default_value("100"),
-        )*/
+        )
+        .arg(
+            Arg::with_name("hue")
+                .help("hue, range: 0..360")
+                .long("hue")
+                .default_value("0"),
+        )
+        .arg(
+            Arg::with_name("saturation")
+                .help("saturation, range: 0..1000")
+                .long("saturation")
+                .default_value("100"),
+        )
         .arg(
             Arg::with_name("dir")
                 .help("mountpoint for video filesystem")
@@ -452,7 +494,10 @@ fn main() -> Result<(), String> {
     let bitrate = value_t!(matches, "bitrate", u32).unwrap_or(20000);
     let audio_src = value_t!(matches, "audio_src", u32).unwrap_or(2);
     let video_src = value_t!(matches, "video_src", u32).unwrap_or(4);
-    //let buffer_len = value_t!(matches, "buffer_len", u32).unwrap_or(100);
+    let brightness = value_t!(matches, "brightness", i32).unwrap_or(0);
+    let contrast = value_t!(matches, "contrast", i32).unwrap_or(0);
+    let hue = value_t!(matches, "hue", i32).unwrap_or(0);
+    let saturation = value_t!(matches, "saturation", i32).unwrap_or(0);
     let mountpoint = matches.value_of("dir").unwrap();
 
     println!("IT9910HD FuseFS.");
@@ -461,7 +506,6 @@ fn main() -> Result<(), String> {
         width, height, fps, bitrate
     );
     println!("Audio Src: {}, video src: {}", audio_src, video_src);
-    //println!("Buffer: {} MB", buffer_len);
     println!("--------");
 
     let options = ["-o", "ro", "-o", "fsname=it9910fs"]
@@ -470,7 +514,7 @@ fn main() -> Result<(), String> {
         .collect::<Vec<&OsStr>>();
 
     let it9910fs = IT9910FS::new(
-        width, height, fps, bitrate, audio_src, video_src, //buffer_len,
+        width, height, fps, bitrate, audio_src, video_src, brightness, contrast, hue, saturation,
     )?;
 
     fuse::mount(it9910fs, mountpoint, &options).unwrap();

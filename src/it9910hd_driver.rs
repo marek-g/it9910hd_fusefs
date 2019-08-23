@@ -23,6 +23,10 @@ impl IT9910Driver {
         bitrate: u32,
         audio_src: u32,
         video_src: u32,
+        brightness: i32,
+        contrast: i32,
+        hue: i32,
+        saturation: i32,
     ) -> Result<(), String> {
         //self.debug_query_time(1)?;
         //self.set_pc_grabber(0)?;
@@ -53,7 +57,10 @@ impl IT9910Driver {
             self.set_pc_grabber2(device_model, i, width, height, bitrate, fps)?;
         }
 
-        //self.debug_query_time(1)?;
+        self.set_brightness(brightness)?;
+        self.set_contrast(contrast)?;
+        self.set_hue(hue)?;
+        self.set_saturation(saturation)?;
 
         self.set_state(2)?;
 
@@ -121,6 +128,50 @@ impl IT9910Driver {
 
         let _received = self.send_command(&mut buf, 0x99100003, 2)?;
         //println!("SetSource() -> ({}, {})", audio_source, video_source);
+
+        Ok(())
+    }
+
+    fn set_brightness(&mut self, brightness: i32) -> Result<(), String> {
+        let mut buf = [0u8; 16 + 4 * 2];
+
+        write_le_i32(&mut buf[16..20], 0);
+        write_le_i32(&mut buf[20..24], brightness);
+
+        let _received = self.send_command(&mut buf, 0x99100101, 2)?;
+
+        Ok(())
+    }
+
+    fn set_contrast(&mut self, contrast: i32) -> Result<(), String> {
+        let mut buf = [0u8; 16 + 4 * 2];
+
+        write_le_i32(&mut buf[16..20], 0);
+        write_le_i32(&mut buf[20..24], contrast);
+
+        let _received = self.send_command(&mut buf, 0x99100102, 2)?;
+
+        Ok(())
+    }
+
+    fn set_hue(&mut self, hue: i32) -> Result<(), String> {
+        let mut buf = [0u8; 16 + 4 * 2];
+
+        write_le_i32(&mut buf[16..20], 0);
+        write_le_i32(&mut buf[20..24], hue);
+
+        let _received = self.send_command(&mut buf, 0x99100103, 2)?;
+
+        Ok(())
+    }
+
+    fn set_saturation(&mut self, set_saturation: i32) -> Result<(), String> {
+        let mut buf = [0u8; 16 + 4 * 2];
+
+        write_le_i32(&mut buf[16..20], 0);
+        write_le_i32(&mut buf[20..24], set_saturation);
+
+        let _received = self.send_command(&mut buf, 0x99100104, 2)?;
 
         Ok(())
     }

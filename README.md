@@ -29,7 +29,7 @@ sudo udevadm control --reload
 
 ```bash
 mkdir ./video
-./it9910hd_fusefs ./video --width 1920 --height 1080 --fps 30 --bitrate 52000 --audio_src 2 --video_src 4
+./it9910hd_fusefs ./video --width 1920 --height 1080 --fps 30 --bitrate 52000 --audio_src 2 --video_src 4 --brightness=0 --contrast=100 --saturation=100 --hue=0
 ```
 
 ## Play video
