@@ -1,0 +1,13 @@
+#!/bin/bash
+
+#udevadm trigger
+
+mkdir ./video
+
+./it9910hd_fusefs ./video --width 1920 --height 1080 --fps 30 --bitrate 52000 --audio_src 2 --video_src 4 &
+
+mpv -hwdec=auto ./video/hdmi_stream.ts
+
+umount ./video
+
+rmdir ./video
