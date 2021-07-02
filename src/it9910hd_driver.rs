@@ -93,6 +93,7 @@ impl IT9910Driver {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn debug_query_time(&mut self, time: i32) -> Result<i32, String> {
         let mut buf = [0u8; 16 + 4];
 
@@ -107,6 +108,7 @@ impl IT9910Driver {
         Ok(result_time)
     }
 
+    #[allow(dead_code)]
     fn get_source(&mut self) -> Result<(i32, i32), String> {
         let mut buf = [0u8; 16 + 4 * 2];
 
@@ -230,7 +232,7 @@ impl IT9910Driver {
         Ok(result)
     }
 
-    fn get_hw_grabber(&mut self) -> Result<(i32), String> {
+    fn get_hw_grabber(&mut self) -> Result<i32, String> {
         let mut buf = [0u8; 16 + 4 * 35 + 2];
 
         write_le_u32(&mut buf[16..20], 8);
@@ -243,7 +245,12 @@ impl IT9910Driver {
             0x17 => 0,
             0x27 => 1,
             0x37 => 2,
-            _ => -1,
+
+            // MyGica HD Cap X-II returs 0 here and has multiple inputs (HDMI / YpbPr / CVBS)
+            0x00 => 2,
+
+            // unknown device - let's assume it can switch inputs
+            _ => 2,
         };
 
         Ok(device_model)
@@ -354,6 +361,7 @@ fn write_le_i32(dest: &mut [u8], val: i32) {
     dest[3] = res[3];
 }
 
+#[allow(dead_code)]
 fn read_le_u32(input: &[u8]) -> u32 {
     u32::from_le_bytes([input[0], input[1], input[2], input[3]])
 }

@@ -338,11 +338,11 @@ impl Filesystem for IT9910FS {
             println!("Close device");
 
             if let Some(terminate_sender) = &self.terminate_sender {
-                terminate_sender.send(());
+                terminate_sender.send(()).unwrap();
             }
 
             if let Some(thread_ended_receiver) = &self.thread_ended_receiver {
-                thread_ended_receiver.recv();
+                thread_ended_receiver.recv().unwrap();
             }
         }
 
@@ -387,7 +387,7 @@ pub fn run(
             let len = it_driver.read_data(&mut buf)?;
             unsafe { vec.set_len(len) };
 
-            sender.send(vec);
+            sender.send(vec).unwrap();
 
             if len < 16384 {
                 break;
@@ -404,7 +404,7 @@ pub fn run(
         return Err(format!("Problem when stopping IT9910 device: {}", err));
     }
 
-    thread_ended_sender.send(());
+    thread_ended_sender.send(()).unwrap();
 
     Ok(())
 }
