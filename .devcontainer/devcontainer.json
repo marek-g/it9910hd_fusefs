@@ -21,6 +21,10 @@
     "--volume=${localWorkspaceFolder}:/workspaces/${localWorkspaceFolderBasename}:Z"
   ],
 
+  "containerEnv": {
+    "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  },
+
   // Set *default* container specific settings.json values on container create.
   "settings": {
     "lldb.executable": "/usr/bin/lldb",
