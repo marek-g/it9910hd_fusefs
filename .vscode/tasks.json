@@ -4,9 +4,14 @@
     "version": "2.0.0",
     "tasks": [
         {
-            "taskName": "build_it9910hd_fusefs",
+            "label": "build_it9910hd_fusefs",
             "type": "shell",
-            "command": "cargo build"
-        },
+            "command": "cargo build",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
     ]
 }

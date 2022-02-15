@@ -5,11 +5,12 @@
             "name": "it9910hd_fusefs",
             "request": "launch",
             "type": "gdb",
-            "target": "${workspaceRoot}/target/debug/it9910hd_fusefs",
-            "cwd": "${workspaceRoot}",
+            "target": "${workspaceFolder}/target/debug/it9910hd_fusefs",
+            "cwd": "${workspaceFolder}",
             "env": {
                 "RUST_BACKTRACE": "1"
             },
+            "arguments": "./video",
             "preLaunchTask": "build_it9910hd_fusefs"
         },
     ]
